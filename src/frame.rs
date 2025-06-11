@@ -1,4 +1,3 @@
-use std::error::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::common::BoxError;
 pub struct Frame {

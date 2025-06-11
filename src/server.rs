@@ -2,11 +2,13 @@ use crate::{
     common::{BoxError, Config, ServerHandler, Amrc},
     frame::Frame,
     session::{RawSession, ServerSession},
-    session_starter,
+    transport::{
+        readers::{frame_reader_task},
+        writers::writer_task,
+    },
 };
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
 use tokio::io::split;
 
@@ -71,6 +73,7 @@ impl SimpleServerSession {
         ));
 
         self.tcp_sessions.push(raw);
+        assert!(self.tcp_sessions.len() == id as usize);
     }
 
     pub fn new() -> Self {
@@ -99,7 +102,7 @@ impl Server {
         let listener = TcpListener::bind(&self.addr).await?;
         if self.cfg.use_mux {
             let (sock, _) = listener.accept().await?;
-            session_starter::start_mux_server(sock, self.handler.clone(), self.cfg.clone());
+            Server::start_mux_server(sock, self.handler.clone(), self.cfg.clone());
         } else {
             let mut next_id = 1;
             let simple_session = Amrc::new(Mutex::new(SimpleServerSession::new()));
@@ -121,4 +124,18 @@ impl Server {
         }
         Ok(())
     }
+
+    fn start_mux_server(socket: TcpStream, handler: Arc<dyn ServerHandler>, cfg: Config) {
+        let (r, w) = split(socket);
+        let (raw_sess, rx_out, tx_in) = RawSession::new();
+    
+        // 1) spawn the write loop
+        tokio::spawn(writer_task(w, rx_out, cfg.batch.clone()));
+        tokio::spawn(frame_reader_task(r, tx_in));
+        tokio::spawn(async move {
+            let serv_sess = MuxServerSession::new(raw_sess);
+            handler.run(Amrc::from(Mutex::from(serv_sess))).await;
+        });
+    }
+
 }

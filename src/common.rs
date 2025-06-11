@@ -17,7 +17,6 @@ pub struct BatchConfig {
 /// Global configuration
 #[derive(Clone)]
 pub struct Config {
-    pub threads: usize,
     pub use_mux: bool,
     pub batch: Option<BatchConfig>,
 }
@@ -25,7 +24,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            threads: num_cpus::get(),
             use_mux: false,
             batch: None,
         }

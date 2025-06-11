@@ -1,5 +1,4 @@
 use tokio::sync::mpsc::{UnboundedSender, UnboundedReceiver};
-use crate::common::Config;
 use crate::frame::Frame;
 
 /// RawSession exposes Frame‐level send/recv.

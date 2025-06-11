@@ -1,15 +1,7 @@
-mod server;
-mod frame;
-mod common;
-mod session;
-mod session_starter;
-mod transport;
-mod client;
-
 use std::{sync::Arc, time::Duration};
 use futures::FutureExt;
 
-use crate::{
+use tokio_echo::{
     common::{Config, ClientHandler, ServerHandler, BoxError, BatchConfig, Amrc},
     client::Client,
     server::Server,
@@ -19,7 +11,7 @@ use crate::{
 struct EchoServer;
 #[async_trait::async_trait]
 impl ServerHandler for EchoServer {
-    async fn run(&self, mut sess: Amrc<dyn ServerSession + Send>){
+    async fn run(&self, sess: Amrc<dyn ServerSession + Send>){
         println!("EchoServer started");
         loop {
             let mut sess = sess.lock().await;
@@ -51,7 +43,7 @@ impl ClientHandler for HellosClient {
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    let cfg = Config { threads: 4, use_mux: false, batch: Some(BatchConfig { size: 1024, delay: Duration::from_millis(50) }) };
+    let cfg = Config { use_mux: false, batch: Some(BatchConfig { size: 1024, delay: Duration::from_millis(50) }) };
 
     // Start server
     let srv = Server::new(cfg.clone(), Arc::new(EchoServer), "localhost:4321");

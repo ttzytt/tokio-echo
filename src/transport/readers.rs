@@ -1,5 +1,5 @@
 use crate::frame::{Frame, read_frame};
-use tokio::io::{AsyncBufReadExt, AsyncRead};
+use tokio::io::{AsyncRead};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::common::ClientHandler;
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 
-pub async fn frame_reader_task<R>(mut reader: R, mut tx_in: UnboundedSender<Frame>)
+pub async fn frame_reader_task<R>(mut reader: R, tx_in: UnboundedSender<Frame>)
 where
     R: AsyncRead + Unpin,
 {
