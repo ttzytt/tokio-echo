@@ -59,6 +59,7 @@ impl SessionStarter {
         tokio::spawn(writer_task(w, rx_out, cfg.batch.clone()));
         tokio::spawn(mux_server_reader_task(r, tx_in));
         tokio::spawn(async move {
+            println!("spawning mux server handler");
             let serv_sess = &mut ServerSession::new(raw_sess);
             handler.run(serv_sess).await;
         });
@@ -70,5 +71,6 @@ impl SessionStarter {
         let (raw, rx_out, tx_in) = RawSession::new();
         tokio::spawn(writer_task(w, rx_out, cfg.batch.clone()));
         tokio::spawn(mux_client_reader_task(r, raw.tx_out, handlers));
+
     }
 }
