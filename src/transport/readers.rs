@@ -7,21 +7,8 @@ use crate::session::{ClientSession, RawSession};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Simple line‐based reader: wraps each line into Frame{id, payload}
-pub async fn simple_reader_task<R>(reader: R, mut tx_in: UnboundedSender<Frame>, id: u32)
-where
-    R: AsyncRead + Unpin,
-{
-    let mut lines = tokio::io::BufReader::new(reader).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let _ = tx_in.send(Frame {
-            id,
-            payload: line.into_bytes(),
-        });
-    }
-}
 
-pub async fn mux_server_reader_task<R>(mut reader: R, mut tx_in: UnboundedSender<Frame>)
+pub async fn frame_reader_task<R>(mut reader: R, mut tx_in: UnboundedSender<Frame>)
 where
     R: AsyncRead + Unpin,
 {
@@ -38,7 +25,6 @@ pub async fn mux_client_reader_task<R>(
     R: AsyncRead + Unpin + Send + 'static,
 {
     let max_id = handlers.len() as u32;
-    println!("[demux] max_id={}", max_id);
     let mut sessions: HashMap<u32, UnboundedSender<Frame>> = HashMap::new();
     for id in 1..=max_id {
         let (tx, rx): (UnboundedSender<Frame>, UnboundedReceiver<Frame>) = unbounded_channel();
@@ -50,7 +36,6 @@ pub async fn mux_client_reader_task<R>(
         };
         let handler = handlers[(id - 1) as usize].clone();
         tokio::spawn(async move {
-            println!("client handler spawned for id={}", id);
             let mut sess = ClientSession::new(raw_sub, id);
             handler.run(&mut sess).await;
         });
@@ -59,7 +44,7 @@ pub async fn mux_client_reader_task<R>(
     while let Ok(frame) = read_frame(&mut reader).await {
         let id = frame.id;
         if id == 0 || id > max_id {
-            eprintln!("[demux] invalid id={}", id);
+            eprintln!("[readers] invalid id={}", id);
             continue;
         }
         if let Some(tx) = sessions.get(&id) {

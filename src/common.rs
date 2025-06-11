@@ -1,9 +1,11 @@
 use std::{error::Error, sync::Arc};
 use async_trait::async_trait;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use crate::session;
 
 pub type BoxError = Box<dyn Error + Send + Sync>;
+pub type Amrc<T> = Arc<Mutex<T>>;
 
 /// Batching configuration
 #[derive(Clone)]
@@ -39,5 +41,5 @@ pub trait ClientHandler: Send + Sync + 'static {
 /// Server‐side handler: sees stream IDs + payloads
 #[async_trait]
 pub trait ServerHandler: Send + Sync + 'static {
-    async fn run(&self, sess: &mut session::ServerSession);
+    async fn run(&self, mut sess: Amrc<dyn session::ServerSession + Send>);
 }

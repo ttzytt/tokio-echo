@@ -2,7 +2,7 @@ use tokio::net::TcpStream;
 use std::sync::Arc;
 use crate::{
     common::{Config, ClientHandler, BoxError},
-    session_starter::SessionStarter,
+    session_starter,
 };
 
 pub struct Client {
@@ -23,11 +23,11 @@ impl Client {
     pub async fn run(&self) -> Result<(), BoxError> {
         if self.cfg.use_mux {
             let sock = TcpStream::connect(&self.addr).await?;
-            SessionStarter::start_mux_client(sock, self.handlers.clone(), self.cfg.clone());
+            session_starter::start_mux_client(sock, self.handlers.clone(), self.cfg.clone());
         } else {
-            for (i, h) in self.handlers.iter().enumerate() {
+            for h in self.handlers.iter() {
                 let sock = TcpStream::connect(&self.addr).await?;
-                SessionStarter::start_simple_client(sock, (i + 1) as u32, self.cfg.clone(), h.clone());
+                session_starter::start_simple_client(sock, self.cfg.clone(), h.clone());
             }
         }
         Ok(())

@@ -38,21 +38,10 @@ impl ClientSession {
     }
 }
 
-/// ServerSession exposes substream IDs.
-pub struct ServerSession {
-    raw: RawSession,
-}
 
-impl ServerSession {
-    pub fn new(raw: RawSession) -> Self {
-        Self { raw }
-    }
+#[async_trait::async_trait]
+pub trait ServerSession{
+    async fn recv(&mut self) -> Option<(u32, Vec<u8>)>;
+    fn send_to(&self, sub_id: u32, payload: Vec<u8>);
 
-    pub async fn recv(&mut self) -> Option<(u32, Vec<u8>)> {
-        self.raw.rx_in.recv().await.map(|f| (f.id, f.payload))
-    }
-
-    pub fn send_to(&self, sub_id: u32, payload: Vec<u8>) {
-        let _ = self.raw.tx_out.send(Frame { id: sub_id, payload });
-    }
 }

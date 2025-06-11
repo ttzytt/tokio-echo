@@ -5,9 +5,12 @@ mod session;
 mod session_starter;
 mod transport;
 mod client;
-use std::sync::Arc;
+
+use std::{sync::Arc, time::Duration};
+use futures::FutureExt;
+
 use crate::{
-    common::{Config, ClientHandler, ServerHandler, BoxError},
+    common::{Config, ClientHandler, ServerHandler, BoxError, BatchConfig, Amrc},
     client::Client,
     server::Server,
     session::{ClientSession, ServerSession},
@@ -16,12 +19,16 @@ use crate::{
 struct EchoServer;
 #[async_trait::async_trait]
 impl ServerHandler for EchoServer {
-    async fn run(&self, sess: &mut ServerSession) {
+    async fn run(&self, mut sess: Amrc<dyn ServerSession + Send>){
         println!("EchoServer started");
-        while let Some((id, msg)) = sess.recv().await {
-            let text = String::from_utf8_lossy(&msg);
-            let ack = format!("ack {}: {}", id, text).into_bytes();
-            sess.send_to(id, ack);
+        loop {
+            let mut sess = sess.lock().await;
+            let attempt = sess.recv().now_or_never();
+            if let Some(Some((id, payload))) = attempt {
+                println!("server got: id={}, payload={}", id, String::from_utf8_lossy(&payload));
+                let ack = format!("ack: {}: {}", id, String::from_utf8_lossy(&payload)).into_bytes();
+                sess.send_to(id, ack);
+            } 
         }
     }
 }
@@ -37,21 +44,22 @@ impl ClientHandler for HellosClient {
             if let Some(resp) = sess.recv().await {
                 println!("client got: {}", String::from_utf8_lossy(&resp));
             }
-            // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    let cfg = Config { threads: 4, use_mux: true, batch: None };
+    let cfg = Config { threads: 4, use_mux: false, batch: Some(BatchConfig { size: 1024, delay: Duration::from_millis(50) }) };
 
     // Start server
-    let srv = Server::new(cfg.clone(), Arc::new(EchoServer), "localhost:8080");
-    tokio::spawn(async move { srv.run().await.unwrap() });
+    let srv = Server::new(cfg.clone(), Arc::new(EchoServer), "localhost:4321");
+    tokio::spawn(async move { srv.run().await.unwrap();});
 
-    // Start client
-    let mut cli = Client::new(cfg, "localhost:8080");
+    // wait for a second then start client
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let mut cli = Client::new(cfg, "localhost:4321");
     cli.register(Arc::new(HellosClient));
     cli.register(Arc::new(HellosClient)); // Register multiple handlers if needed
     cli.run().await?;

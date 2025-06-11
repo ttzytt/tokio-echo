@@ -41,7 +41,7 @@ pub async fn writer_task<W>(
     async fn flush<W>(writer: &mut W, buf: &mut Vec<Frame>)
     where
         W: AsyncWriteExt + Unpin,
-    {
+    {   
         for frame in buf.drain(..) {
             let _ = write_frame(writer, &frame).await;
         }
