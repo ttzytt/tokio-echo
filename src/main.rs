@@ -53,6 +53,7 @@ async fn main() -> Result<(), BoxError> {
     // Start client
     let mut cli = Client::new(cfg, "localhost:8080");
     cli.register(Arc::new(HellosClient));
+    cli.register(Arc::new(HellosClient)); // Register multiple handlers if needed
     cli.run().await?;
     println!("Client finished running");
     // make it never return 
