@@ -1,68 +1,74 @@
-use std::collections::HashMap;
-
-use tokio::{net::TcpStream, io::split, spawn};
-use tokio::sync::mpsc::UnboundedSender;
 use crate::{
-    common::{Config, MessageHandler},
-    session::{SessionCore, SessionContext},
+    common::{ClientHandler, Config, ServerHandler},
     frame::Frame,
-    transport::{writers::writer_task, readers::simple_reader_task, readers::mux_reader_task},
+    session::{ClientSession, RawSession, ServerSession},
+    transport::{
+        readers::{mux_client_reader_task, mux_server_reader_task, simple_reader_task},
+        writers::writer_task,
+    },
 };
+use core::hash;
 use std::sync::Arc;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::{io::split, net::TcpStream};
 
 pub struct SessionStarter;
 
 impl SessionStarter {
-    pub fn start_simple(
+    /// Simple TCP (no mux) for clients
+    pub fn start_simple_client(
         socket: TcpStream,
         id: u32,
         cfg: Config,
-        handler: Arc<dyn MessageHandler>,
+        handler: Arc<dyn ClientHandler>,
     ) {
         let (r, w) = split(socket);
-        let (core, rx_out, tx_in) = SessionCore::new(id, cfg.clone());
-
-        spawn(writer_task(w, rx_out, cfg.batch.clone()));
-        spawn(simple_reader_task(r, tx_in));
-        spawn(async move {
-            let mut ctx = SessionContext::from(core);
-            handler.run(&mut ctx).await;
+        let (raw, rx_out, tx_in) = RawSession::new();
+        tokio::spawn(writer_task(w, rx_out, cfg.batch.clone()));
+        tokio::spawn(simple_reader_task(r, tx_in, id));
+        tokio::spawn(async move {
+            let mut sess = ClientSession::new(raw, id);
+            handler.run(&mut sess).await;
         });
     }
 
-    pub fn start_mux(
+    pub fn start_simple_server(
         socket: TcpStream,
-        handlers: Vec<Arc<dyn MessageHandler>>,
+        id: u32,
         cfg: Config,
+        handler: Arc<dyn ServerHandler>,
     ) {
         let (r, w) = split(socket);
-        let (tx_out, rx_out) = tokio::sync::mpsc::unbounded_channel::<Frame>();
+        let (raw, rx_out, tx_in) = RawSession::new();
 
-        spawn(writer_task(w, rx_out, cfg.batch.clone()));
+        tokio::spawn(writer_task(w, rx_out, cfg.batch.clone()));
+        tokio::spawn(simple_reader_task(r, tx_in, id));
 
-        let valid_ids: Vec<u32> = (1..=handlers.len() as u32).collect();
-        let mut sessions: HashMap<u32, UnboundedSender<Vec<u8>>> = HashMap::new();
-        spawn(async move {
-            let mut reader = r;
-            while let Ok(frame) = crate::frame::read_frame(&mut reader).await {
-                let id = frame.id;
-                if let Some(tx_in) = sessions.get(&id) {
-                    let _ = tx_in.send(frame.payload);
-                } else if valid_ids.contains(&id) {
-                    let (tx_in, rx_in) = tokio::sync::mpsc::unbounded_channel();
-                    let _ = tx_in.send(frame.payload);
-                    sessions.insert(id, tx_in.clone());
-                    let tx_out_cl = tx_out.clone();
-                    let mut ctx = SessionContext::new(id, tx_out_cl, rx_in);
-                    let handler = handlers[(id as usize) - 1].clone();
-
-                    spawn(async move {
-                        handler.run(&mut ctx).await;
-                    });
-                } else {
-                    eprintln!("[MuxSession] invalid sub-stream id={}", id);
-                }
-            }
+        tokio::spawn(async move {
+            let mut sess = ServerSession::new(raw);
+            handler.run(&mut sess).await;
         });
+    }
+
+    /// Mux‐server entry point: a single ServerHandler handles *all* substream IDs
+    pub fn start_mux_server(socket: TcpStream, handler: Arc<dyn ServerHandler>, cfg: Config) {
+        let (r, w) = split(socket);
+        let (raw_sess, rx_out, tx_in) = RawSession::new();
+
+        // 1) spawn the write loop
+        tokio::spawn(writer_task(w, rx_out, cfg.batch.clone()));
+        tokio::spawn(mux_server_reader_task(r, tx_in));
+        tokio::spawn(async move {
+            let serv_sess = &mut ServerSession::new(raw_sess);
+            handler.run(serv_sess).await;
+        });
+    }
+
+    /// Mux‐client entry point: each registered ClientHandler drives one substream ID
+    pub fn start_mux_client(socket: TcpStream, handlers: Vec<Arc<dyn ClientHandler>>, cfg: Config) {
+        let (r, w) = split(socket);
+        let (raw, rx_out, tx_in) = RawSession::new();
+        tokio::spawn(writer_task(w, rx_out, cfg.batch.clone()));
+        tokio::spawn(mux_client_reader_task(r, raw.tx_out, handlers));
     }
 }

@@ -2,54 +2,57 @@ use tokio::sync::mpsc::{UnboundedSender, UnboundedReceiver};
 use crate::common::Config;
 use crate::frame::Frame;
 
-pub struct SessionCore {
-    pub id: u32,
-    pub cfg: Config,
+/// RawSession exposes Frame‐level send/recv.
+/// 
+pub struct RawSession {
     pub tx_out: UnboundedSender<Frame>,
-    pub rx_in: UnboundedReceiver<Vec<u8>>,
+    pub rx_in: UnboundedReceiver<Frame>,
 }
 
-// sending this to the message handler
-pub struct SessionContext {
+impl RawSession {
+    /// Creates channels: (RawSession, rx_to_writer, tx_from_reader)
+    pub fn new() -> (Self, UnboundedReceiver<Frame>, UnboundedSender<Frame>) {
+        let (tx_out, rx_out) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_in, rx_in) = tokio::sync::mpsc::unbounded_channel();
+        (RawSession { tx_out, rx_in }, rx_out, tx_in)
+    }
+}
+
+/// ClientSession hides stream IDs: send/recv only payloads.
+pub struct ClientSession {
+    raw: RawSession,
     id: u32,
-    tx_out: UnboundedSender<Frame>,
-    rx_in: UnboundedReceiver<Vec<u8>>,
 }
 
-impl SessionContext {
-    pub fn send(&self, data: Vec<u8>) {
-        let _ = self.tx_out.send(Frame { id: self.id, payload: data });
+impl ClientSession {
+    pub fn new(raw: RawSession, id: u32) -> Self {
+        Self { raw, id }
+    }
+
+    pub fn send(&self, payload: Vec<u8>) {
+        let _ = self.raw.tx_out.send(Frame { id: self.id, payload });
     }
 
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
-        self.rx_in.recv().await
-    }
-
-    pub fn new(id: u32, tx_out: UnboundedSender<Frame>, rx_in: UnboundedReceiver<Vec<u8>>) -> Self {
-        SessionContext { id, tx_out, rx_in }
+        self.raw.rx_in.recv().await.map(|f| f.payload)
     }
 }
 
-impl From<SessionCore> for SessionContext {
-    fn from(core: SessionCore) -> Self {
-        SessionContext {
-            id: core.id,
-            tx_out: core.tx_out,
-            rx_in: core.rx_in,
-        }
-    }
+/// ServerSession exposes substream IDs.
+pub struct ServerSession {
+    raw: RawSession,
 }
 
-impl SessionCore {
-    pub fn new(id: u32, cfg: Config)
-        -> (Self, UnboundedReceiver<Frame>, UnboundedSender<Vec<u8>>)
-    {
-        let (tx_out, rx_out) = tokio::sync::mpsc::unbounded_channel();
-        let (tx_in,  rx_in ) = tokio::sync::mpsc::unbounded_channel();
-        (
-            SessionCore { id, cfg, tx_out, rx_in },
-            rx_out,
-            tx_in,
-        )
+impl ServerSession {
+    pub fn new(raw: RawSession) -> Self {
+        Self { raw }
+    }
+
+    pub async fn recv(&mut self) -> Option<(u32, Vec<u8>)> {
+        self.raw.rx_in.recv().await.map(|f| (f.id, f.payload))
+    }
+
+    pub fn send_to(&self, sub_id: u32, payload: Vec<u8>) {
+        let _ = self.raw.tx_out.send(Frame { id: sub_id, payload });
     }
 }
