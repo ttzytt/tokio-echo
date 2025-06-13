@@ -1,16 +1,17 @@
 use crate::{
-    common::{BoxError, Config, ServerHandler, Amrc},
+    common::{Amrc, BoxError, Config, ServerHandler},
     frame::Frame,
     session::{RawSession, ServerSession},
     transport::{
-        readers::{frame_reader_task},
+        readers::{ReaderTxInOpt, frame_reader_task},
         writers::writer_task,
     },
 };
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 use tokio::io::split;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Mutex, Notify};
+use tokio::task::JoinHandle;
 
 pub struct MuxServerSession {
     raw: RawSession,
@@ -38,6 +39,9 @@ impl MuxServerSession {
 
 pub struct SimpleServerSession {
     tcp_sessions: Vec<RawSession>,
+    stop_sig: Arc<Notify>,
+    reader_handles: Vec<JoinHandle<Result<(), BoxError>>>,
+    writer_handles: Vec<JoinHandle<()>>,
 }
 
 #[async_trait::async_trait]
@@ -53,7 +57,7 @@ impl ServerSession for SimpleServerSession {
 
     fn send_to(&self, id: u32, payload: Vec<u8>) {
         let single_sess = &self.tcp_sessions[id as usize - 1];
-        let _ = single_sess.tx_out.send(Frame { id: 0, payload });
+        single_sess.tx_out.send(Frame { id: 0, payload }).unwrap();
     }
 }
 
@@ -62,23 +66,42 @@ impl SimpleServerSession {
         let (r, w) = split(sock);
         let (raw, rx_out, tx_in) = RawSession::new();
 
-        tokio::spawn(crate::transport::writers::writer_task(
+        self.writer_handles.push(tokio::spawn(writer_task(
             w,
             rx_out,
             cfg.batch.clone(),
-        ));
-        tokio::spawn(crate::transport::readers::frame_reader_task(
+            Some(self.stop_sig.clone()),
+        )));
+
+        self.reader_handles.push(tokio::spawn(frame_reader_task(
             r,
-            tx_in.clone(),
-        ));
+            ReaderTxInOpt::TxIn(tx_in.clone()),
+            Some(self.stop_sig.clone()),
+        )));
 
         self.tcp_sessions.push(raw);
         assert!(self.tcp_sessions.len() == id as usize);
     }
 
+    pub async fn stop_rw_tasks(&mut self) {
+        for (r_handle, w_handle) in self
+            .reader_handles
+            .drain(..)
+            .zip(self.writer_handles.drain(..))
+        {
+            self.stop_sig.notify_one();
+            self.stop_sig.notify_one();
+            r_handle.await.unwrap().unwrap();
+            w_handle.await.unwrap();
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             tcp_sessions: Vec::new(),
+            stop_sig: Arc::new(Notify::new()),
+            reader_handles: Vec::new(),
+            writer_handles: Vec::new(),
         }
     }
 }
@@ -87,6 +110,7 @@ pub struct Server {
     cfg: Config,
     handler: Arc<dyn ServerHandler>,
     addr: String,
+    stop_accept_sig: Arc<Notify>,
 }
 
 impl Server {
@@ -95,47 +119,94 @@ impl Server {
             cfg,
             handler,
             addr: addr.into(),
+            stop_accept_sig: Arc::new(Notify::new()),
         }
     }
 
-    pub async fn run(&self) -> Result<(), BoxError> {
-        let listener = TcpListener::bind(&self.addr).await?;
+    pub fn stop_accept(&self) {
+        self.stop_accept_sig.notify_one();
+    }
+
+    pub async fn run(&self) {
+        let listener = TcpListener::bind(&self.addr).await.unwrap();
         if self.cfg.use_mux {
-            let (sock, _) = listener.accept().await?;
-            Server::start_mux_server(sock, self.handler.clone(), self.cfg.clone());
+            let (sock, _) = listener.accept().await.unwrap();
+            let _ = sock.set_nodelay(self.cfg.batch.is_some());
+            Server::start_mux_server(sock, self.handler.clone(), self.cfg.clone()).await.unwrap();
         } else {
             let mut next_id = 1;
             let simple_session = Amrc::new(Mutex::new(SimpleServerSession::new()));
             let handler = self.handler.clone();
             let sess_for_spawn = simple_session.clone();
+            let sess_for_accept = simple_session.clone();
             let cfg = self.cfg.clone();
 
-            tokio::spawn(async move {
+            let sh_join_handle = tokio::spawn(async move {
                 handler.run(sess_for_spawn).await;
             });
 
-            loop {
-                let (sock, _) = listener.accept().await.unwrap();
-                let mut sess = simple_session.lock().await;
-                sess.reg_new_session(sock, next_id, cfg.clone());
-                next_id += 1;
-            };
-        
+            let stop_accept_sig = self.stop_accept_sig.clone();
+            let accept_handle = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = stop_accept_sig.notified() => {
+                            return;
+                        }
+                        res = listener.accept() => {
+                            match res {
+                                Ok((sock, _)) => {
+                                    let _ = sock.set_nodelay(cfg.batch.is_some());
+                                    let mut sess = sess_for_accept.lock().await;
+                                    sess.reg_new_session(sock, next_id, cfg.clone());
+                                    next_id += 1;
+                                },
+                                Err(e) => {
+                                    eprintln!("Error accepting connection: {}", e);
+                                }
+                            }
+                        },
+                    }
+                }
+            });
+
+            accept_handle.await.unwrap();
+            sh_join_handle.await.unwrap();
+            simple_session.lock().await.stop_rw_tasks().await;
         }
-        Ok(())
     }
 
-    fn start_mux_server(socket: TcpStream, handler: Arc<dyn ServerHandler>, cfg: Config) {
+    fn start_mux_server(
+        socket: TcpStream,
+        handler: Arc<dyn ServerHandler>,
+        cfg: Config,
+    ) -> JoinHandle<()> {
         let (r, w) = split(socket);
         let (raw_sess, rx_out, tx_in) = RawSession::new();
-    
-        // 1) spawn the write loop
-        tokio::spawn(writer_task(w, rx_out, cfg.batch.clone()));
-        tokio::spawn(frame_reader_task(r, tx_in));
-        tokio::spawn(async move {
+
+        let stop_sig = Arc::new(Notify::new());
+        let writer_handle = tokio::spawn(writer_task(
+            w,
+            rx_out,
+            cfg.batch.clone(),
+            Some(stop_sig.clone()),
+        ));
+        let reader_handle = tokio::spawn(frame_reader_task(
+            r,
+            ReaderTxInOpt::TxIn(tx_in),
+            Some(stop_sig.clone()),
+        ));
+        let sh_join_handle = tokio::spawn(async move {
             let serv_sess = MuxServerSession::new(raw_sess);
             handler.run(Amrc::from(Mutex::from(serv_sess))).await;
         });
-    }
 
+        tokio::spawn(async move {
+            sh_join_handle.await.unwrap();
+            stop_sig.notify_one();
+            stop_sig.notify_one();
+            reader_handle.await.unwrap().unwrap();
+            writer_handle.await.unwrap();
+        })
+    }
 }

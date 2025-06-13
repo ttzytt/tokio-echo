@@ -25,3 +25,15 @@ where W: AsyncWriteExt + Unpin {
     writer.write_all(&buf).await?;
     Ok(())
 }
+
+pub async fn write_frames<W>(writer: &mut W, frames: &[Frame]) -> Result<(), BoxError>
+where W: AsyncWriteExt + Unpin {
+    let mut buf = Vec::with_capacity(frames.iter().map(|f| 8 + f.payload.len()).sum());
+    for frame in frames {
+        buf.extend_from_slice(&frame.id.to_be_bytes());
+        buf.extend_from_slice(&(frame.payload.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&frame.payload);
+    }
+    writer.write_all(&buf).await?;
+    Ok(())
+}

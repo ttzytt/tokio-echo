@@ -1,50 +1,84 @@
 use crate::{
-    common::BatchConfig,
-    frame::{Frame, write_frame},
+    common::{BatchConfig, BoxError, RxOut},
+    frame::{Frame, write_frame, write_frames},
 };
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::Notify;
+use std::sync::Arc;
 
 pub async fn writer_task<W>(
     mut writer: W,
-    mut rx: UnboundedReceiver<Frame>,
+    mut rx_out: RxOut,
     batch: Option<BatchConfig>,
-) where
+    stop_sig : Option<Arc<Notify>>,
+)
+where
     W: AsyncWriteExt + Unpin,
 {
-    if let Some(BatchConfig { size, delay }) = batch {
-        let mut buf = Vec::with_capacity(size);
+    let stop_sig = stop_sig.unwrap_or_else(|| Arc::new(Notify::new()));
+
+    if let Some(BatchConfig { size_byte, delay }) = batch {
+        let mut buf = Vec::new();
         let mut last = tokio::time::Instant::now();
-        while let Some(frame) = rx.recv().await {
-            buf.push(frame);
-            if buf.len() >= size {
-                flush(&mut writer, &mut buf).await;
-                last = tokio::time::Instant::now();
-            }
+        let mut buf_bytelen = 0usize;
+        loop {
             tokio::select! {
-                _ = tokio::time::sleep_until(last + delay) => {
-                    if !buf.is_empty(){ 
-                        flush(&mut writer, &mut buf).await;
-                        last = tokio::time::Instant::now();
+                biased;
+                _ = stop_sig.notified() => {
+                    if !buf.is_empty() {
+                        flush(&mut writer, &mut buf).await.unwrap();
                     }
-                }
-                else => {}
+                    break;
+                },
+                _ = tokio::time::sleep_until(last + delay) => {
+                    if !buf.is_empty() { 
+                        flush(&mut writer, &mut buf).await.unwrap();
+                    }
+                    last = tokio::time::Instant::now();
+                },
+                frame = rx_out.recv() => {
+                    match frame {
+                        Some(frame) => {
+                            buf_bytelen += 8 + frame.payload.len(); // 8 bytes for id and length
+                            buf.push(frame);
+                            if buf_bytelen >= size_byte {
+                                flush(&mut writer, &mut buf).await.unwrap();
+                                last = tokio::time::Instant::now();
+                            }
+                        },
+                        None => break,
+                    }
+                },
             }
         }
+
     } else {
-        while let Some(frame) = rx.recv().await {
-            let _ = write_frame(&mut writer, &frame).await;
-            let _ = writer.flush().await;
+        loop{
+            tokio::select! {
+                biased;
+                _ = stop_sig.notified() => {
+                    break;
+                },
+                frame = rx_out.recv() => {
+                    match frame {
+                        Some(frame) => {
+                            write_frame(&mut writer, &frame).await.unwrap();
+                            writer.flush().await.unwrap();
+                        },
+                        None => break, // Channel closed
+                    }
+                },
+            }
         }
     }
 
-    async fn flush<W>(writer: &mut W, buf: &mut Vec<Frame>)
+    async fn flush<W>(writer: &mut W, buf: &mut Vec<Frame>) -> Result<(), BoxError>
     where
         W: AsyncWriteExt + Unpin,
     {   
-        for frame in buf.drain(..) {
-            let _ = write_frame(writer, &frame).await;
-        }
-        let _ = writer.flush().await;
+        write_frames(writer, buf).await?;
+        writer.flush().await?;
+        Ok(())
     }
 }
