@@ -14,14 +14,14 @@ pub type RxIn = tokio::sync::mpsc::UnboundedReceiver<Frame>;
 
 
 /// Batching configuration
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BatchConfig {
     pub size_byte: usize,
     pub delay: Duration,
 }
 
 /// Global configuration
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Config {
     pub use_mux: bool,
     pub batch: Option<BatchConfig>,

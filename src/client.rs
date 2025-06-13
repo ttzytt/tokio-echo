@@ -7,14 +7,14 @@ use crate::{
         writers::writer_task,
     },
 };
-use futures::future::Join;
-use futures::future::join_all;
 use std::collections::HashMap;
-use std::{f32::consts::E, sync::Arc};
+use std::sync::Arc;
 use tokio::io::{AsyncRead, split};
 use tokio::net::TcpStream;
 use tokio::sync::{Notify, mpsc::unbounded_channel};
 use tokio::task::JoinHandle;
+
+use tracing::Instrument;
 
 pub struct Client {
     cfg: Config,
@@ -55,7 +55,6 @@ impl Client {
             for h in handles {
                 h.await.unwrap();
             }
-            
         }
     }
 
@@ -68,17 +67,16 @@ impl Client {
         let (r, w) = split(socket);
         let (raw, rx_out, tx_in) = RawSession::new();
         let stop_sig = Arc::new(Notify::new());
-        let writer_handle = tokio::spawn(writer_task(
-            w,
-            rx_out,
-            cfg.batch.clone(),
-            Some(stop_sig.clone()),
-        ));
-        let reader_handle = tokio::spawn(frame_reader_task(
-            r,
-            ReaderTxInOpt::TxIn(tx_in),
-            Some(stop_sig.clone()),
-        ));
+        let writer_handle = tokio::spawn(
+            writer_task(w, rx_out, cfg.batch.clone(), Some(stop_sig.clone()))
+                .instrument(tracing::info_span!("writer_task", is_server = false)),
+        );
+
+        let reader_handle = tokio::spawn(
+            frame_reader_task(r, ReaderTxInOpt::TxIn(tx_in), Some(stop_sig.clone()))
+                .instrument(tracing::info_span!("reader_task", is_server = false)),
+        );
+        
         let ch_join_handle = tokio::spawn(async move {
             // ch = client handler
             let mut sess = ClientSession::new(raw, 0);
@@ -116,13 +114,12 @@ impl Client {
             ReaderTxInOpt::IdToTxIn(id_to_tx_in),
             Some(stop_sig.clone()),
         ));
-        
+
         ch_join_handle.await.unwrap();
         stop_sig.notify_one();
         stop_sig.notify_one();
         reader_handle.await.unwrap().unwrap();
         writer_handle.await.unwrap();
-
     }
 
     pub async fn start_mux_client_handlers(

@@ -73,25 +73,26 @@ impl ClientHandler for HellosClient {
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
+    tracing_subscriber::fmt::init();
     unsafe{env::set_var("RUST_BACKTRACE", "full")};
     let cfg = Config { use_mux: false, batch: Some(BatchConfig { size_byte: 128, delay: Duration::from_millis(100) }) };
     // let cfg = Config { use_mux: false, batch: None};
 
-    // Start server
     let srv = Arc::from(Server::new(cfg.clone(), Arc::new(EchoServer), "localhost:4321"));
     let srv_for_spawn = srv.clone();
     let srv_handle = tokio::spawn(async move { srv_for_spawn.run().await});
 
-    // wait for a second then start client
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     let mut cli = Client::new(cfg, "localhost:4321");
     cli.register(Arc::new(HellosClient));
     cli.register(Arc::new(HellosClient)); 
+
     cli.run().await; 
     println!("Clients finished running");
+
     srv.stop_accept();
     srv_handle.await.unwrap();
     println!("Server finished running");
-    Ok(())
 
+    Ok(())
 }

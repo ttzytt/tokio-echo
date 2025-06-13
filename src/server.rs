@@ -12,6 +12,7 @@ use tokio::io::split;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
+use tracing::{Instrument};
 
 pub struct MuxServerSession {
     raw: RawSession,
@@ -66,18 +67,24 @@ impl SimpleServerSession {
         let (r, w) = split(sock);
         let (raw, rx_out, tx_in) = RawSession::new();
 
-        self.writer_handles.push(tokio::spawn(writer_task(
-            w,
-            rx_out,
-            cfg.batch.clone(),
-            Some(self.stop_sig.clone()),
-        )));
+        self.writer_handles.push(tokio::spawn(
+            writer_task(w, rx_out, cfg.batch.clone(), Some(self.stop_sig.clone())).instrument(
+                tracing::info_span!("writer_task", is_server = true, id = id),
+            ),
+        ));
 
-        self.reader_handles.push(tokio::spawn(frame_reader_task(
-            r,
-            ReaderTxInOpt::TxIn(tx_in.clone()),
-            Some(self.stop_sig.clone()),
-        )));
+        self.reader_handles.push(tokio::spawn(
+            frame_reader_task(
+                r,
+                ReaderTxInOpt::TxIn(tx_in.clone()),
+                Some(self.stop_sig.clone()),
+            )
+            .instrument(tracing::info_span!(
+                "reader_task",
+                is_server = true,
+                id = id
+            )),
+        ));
 
         self.tcp_sessions.push(raw);
         assert!(self.tcp_sessions.len() == id as usize);
@@ -132,7 +139,9 @@ impl Server {
         if self.cfg.use_mux {
             let (sock, _) = listener.accept().await.unwrap();
             let _ = sock.set_nodelay(self.cfg.batch.is_some());
-            Server::start_mux_server(sock, self.handler.clone(), self.cfg.clone()).await.unwrap();
+            Server::start_mux_server(sock, self.handler.clone(), self.cfg.clone())
+                .await
+                .unwrap();
         } else {
             let mut next_id = 1;
             let simple_session = Amrc::new(Mutex::new(SimpleServerSession::new()));
@@ -185,17 +194,14 @@ impl Server {
         let (raw_sess, rx_out, tx_in) = RawSession::new();
 
         let stop_sig = Arc::new(Notify::new());
-        let writer_handle = tokio::spawn(writer_task(
-            w,
-            rx_out,
-            cfg.batch.clone(),
-            Some(stop_sig.clone()),
-        ));
-        let reader_handle = tokio::spawn(frame_reader_task(
-            r,
-            ReaderTxInOpt::TxIn(tx_in),
-            Some(stop_sig.clone()),
-        ));
+        let writer_handle = tokio::spawn(
+            writer_task(w, rx_out, cfg.batch.clone(), Some(stop_sig.clone()))
+                .instrument(tracing::info_span!("writer_task", is_server = true,)),
+        );
+        let reader_handle = tokio::spawn(
+            frame_reader_task(r, ReaderTxInOpt::TxIn(tx_in), Some(stop_sig.clone()))
+                .instrument(tracing::info_span!("reader_task", is_server = true)),
+        );
         let sh_join_handle = tokio::spawn(async move {
             let serv_sess = MuxServerSession::new(raw_sess);
             handler.run(Amrc::from(Mutex::from(serv_sess))).await;

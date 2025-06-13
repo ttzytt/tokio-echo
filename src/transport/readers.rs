@@ -1,13 +1,11 @@
 use crate::frame::{Frame, read_frame};
 use tokio::io::AsyncRead;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedSender};
 
-use crate::common::{BoxError, ClientHandler};
-use crate::session::{ClientSession, RawSession};
+use crate::common::{BoxError};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Notify;
-use tokio::task::JoinHandle;
 
 pub enum ReaderTxInOpt{
     TxIn(UnboundedSender<Frame>), 
@@ -45,7 +43,7 @@ where
                         };
                     }
                     Err(e) => {
-                        eprintln!("[readers] error reading frame: {}", e);
+                        tracing::error!("Error reading frame: {}", e);
                         return Err(e);
                     }
                 }
