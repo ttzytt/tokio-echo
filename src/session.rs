@@ -1,8 +1,8 @@
-use tokio::sync::mpsc::{UnboundedSender, UnboundedReceiver};
-use crate::frame::Frame;
+// src/session.rs
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use crate::common::BoxError;
+use crate::frame::{Frame, FrameKind};
 
-/// RawSession exposes Frame‐level send/recv.
-/// 
 pub struct RawSession {
     pub tx_out: UnboundedSender<Frame>,
     pub rx_in: UnboundedReceiver<Frame>,
@@ -29,7 +29,11 @@ impl ClientSession {
     }
 
     pub fn send(&self, payload: Vec<u8>) {
-        let _ = self.raw.tx_out.send(Frame { id: self.id, payload });
+        let _ = self.raw.tx_out.send(Frame {
+            kind: FrameKind::Data,
+            id: self.id,
+            payload,
+        });
     }
 
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
@@ -37,10 +41,18 @@ impl ClientSession {
     }
 }
 
-
 #[async_trait::async_trait]
 pub trait ServerSession{
     async fn recv(&mut self) -> Option<(u32, Vec<u8>)>;
     fn send_to(&self, sub_id: u32, payload: Vec<u8>);
-
+    fn is_connected(&self, sub_id: u32) -> bool;
+    fn send_if_connected(&self, sub_id: u32, payload: Vec<u8>) -> bool {
+        if self.is_connected(sub_id) {
+            self.send_to(sub_id, payload);
+            true
+        } else {
+            false
+        }
+    }
+    fn client_count(&self) -> usize;
 }

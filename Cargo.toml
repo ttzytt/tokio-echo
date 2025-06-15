@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.88"
+dashmap = "6.1.0"
 either = "1.15.0"
 futures = "0.3.31"
 num_cpus = "1.17.0"

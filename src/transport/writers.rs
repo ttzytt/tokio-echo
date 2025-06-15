@@ -1,19 +1,18 @@
 use crate::{
-    common::{BatchConfig, BoxError, RxOut},
+    common::{BatchConfig, BoxError, RxOut_t},
     frame::{Frame, write_frame, write_frames},
 };
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::Notify;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Notify;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 pub async fn writer_task<W>(
     mut writer: W,
-    mut rx_out: RxOut,
+    mut rx_out: RxOut_t,
     batch: Option<BatchConfig>,
-    stop_sig : Option<Arc<Notify>>,
-)
-where
+    stop_sig: Option<Arc<Notify>>,
+) where
     W: AsyncWriteExt + Unpin,
 {
     let stop_sig = stop_sig.unwrap_or_else(|| Arc::new(Notify::new()));
@@ -26,13 +25,12 @@ where
             tokio::select! {
                 biased;
                 _ = stop_sig.notified() => {
-                    if !buf.is_empty() {
-                        flush(&mut writer, &mut buf).await.unwrap();
-                    }
+                    buf.push(Frame::TERMINATE_FRAME);
+                    flush(&mut writer, &mut buf).await.unwrap();
                     break;
                 },
                 _ = tokio::time::sleep_until(last + delay) => {
-                    if !buf.is_empty() { 
+                    if !buf.is_empty() {
                         flush(&mut writer, &mut buf).await.unwrap();
                     }
                     last = tokio::time::Instant::now();
@@ -52,13 +50,13 @@ where
                 },
             }
         }
-
     } else {
-        loop{
+        loop {
             tokio::select! {
                 biased;
                 _ = stop_sig.notified() => {
-                    break;
+                    write_frame(&mut writer, &Frame::TERMINATE_FRAME).await.unwrap();
+                    writer.flush().await.unwrap();
                 },
                 frame = rx_out.recv() => {
                     match frame {
@@ -76,9 +74,10 @@ where
     async fn flush<W>(writer: &mut W, buf: &mut Vec<Frame>) -> Result<(), BoxError>
     where
         W: AsyncWriteExt + Unpin,
-    {   
+    {
         write_frames(writer, buf).await?;
         writer.flush().await?;
+        buf.clear();
         Ok(())
     }
 }

@@ -6,6 +6,7 @@ use crate::common::{BoxError};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Notify;
+use std::backtrace::{self, Backtrace};
 
 pub enum ReaderTxInOpt{
     TxIn(UnboundedSender<Frame>), 
@@ -13,13 +14,15 @@ pub enum ReaderTxInOpt{
 }
 
 
-pub async fn frame_reader_task<R>(
+pub async fn frame_reader_task<R, F>(
     mut reader: R,
     tx_in_opt: ReaderTxInOpt,
     stop_sig: Option<Arc<Notify>>,
+    on_frame: Option<F>,
 ) -> Result<(), BoxError>
 where
     R: AsyncRead + Unpin,
+    F: Fn(&Frame), 
 {
     let stop_sig = stop_sig.unwrap_or_else(|| Arc::new(Notify::new()));
     loop {
@@ -33,6 +36,10 @@ where
                     Ok(frame) => {
                         match &tx_in_opt{
                             ReaderTxInOpt::TxIn(tx) => {
+                                if let Some(cb) = on_frame.as_ref() {
+                                    // cb = callback
+                                    cb(&frame);
+                                }
                                 _ = tx.send(frame)
                             },
                             ReaderTxInOpt::IdToTxIn(map) => {
@@ -43,7 +50,7 @@ where
                         };
                     }
                     Err(e) => {
-                        tracing::error!("Error reading frame: {}", e);
+                        tracing::error!("Error reading frame: {}\nBacktrace: {}", e, Backtrace::capture());
                         return Err(e);
                     }
                 }

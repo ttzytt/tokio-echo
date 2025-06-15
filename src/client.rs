@@ -1,5 +1,5 @@
 use crate::{
-    common::{BoxError, ClientHandler, Config, RxIn, RxOut, TxIn, TxOut},
+    common::{BoxError, ClientHandler, Config, RxIn_t, RxOut_t, TxIn_t, TxOut_t},
     frame::Frame,
     session::{ClientSession, RawSession},
     transport::{
@@ -19,7 +19,8 @@ use tracing::Instrument;
 pub struct Client {
     cfg: Config,
     addr: String,
-    handlers: Vec<Arc<dyn ClientHandler>>,
+    handlers: Vec<Arc<dyn ClientHandler>>, 
+    // TODO: change to Arc<Dashset> so that we can register and remove handlers dynamically
 }
 
 impl Client {
@@ -73,10 +74,15 @@ impl Client {
         );
 
         let reader_handle = tokio::spawn(
-            frame_reader_task(r, ReaderTxInOpt::TxIn(tx_in), Some(stop_sig.clone()))
-                .instrument(tracing::info_span!("reader_task", is_server = false)),
+            frame_reader_task(
+                r,
+                ReaderTxInOpt::TxIn(tx_in),
+                Some(stop_sig.clone()),
+                None::<fn(&Frame)>,
+            )
+            .instrument(tracing::info_span!("reader_task", is_server = false)),
         );
-        
+
         let ch_join_handle = tokio::spawn(async move {
             // ch = client handler
             let mut sess = ClientSession::new(raw, 0);
@@ -113,6 +119,7 @@ impl Client {
             r,
             ReaderTxInOpt::IdToTxIn(id_to_tx_in),
             Some(stop_sig.clone()),
+            None::<fn(&Frame)>,
         ));
 
         ch_join_handle.await.unwrap();
@@ -123,15 +130,15 @@ impl Client {
     }
 
     pub async fn start_mux_client_handlers(
-        common_tx_out: TxOut,
+        common_tx_out: TxOut_t,
         handlers: Vec<Arc<dyn ClientHandler>>,
-    ) -> (JoinHandle<()>, HashMap<u32, TxIn>) {
+    ) -> (JoinHandle<()>, HashMap<u32, TxIn_t>) {
         let max_id = handlers.len() as u32;
-        let mut sessions: HashMap<u32, TxIn> = HashMap::new();
+        let mut sessions: HashMap<u32, TxIn_t> = HashMap::new();
         let mut ch_join_handles: Vec<JoinHandle<()>> = Vec::new();
         // ch = client handler
         for id in 1..=max_id {
-            let (tx_in, rx_in): (TxIn, RxIn) = unbounded_channel();
+            let (tx_in, rx_in): (TxIn_t, RxIn_t) = unbounded_channel();
             sessions.insert(id, tx_in.clone());
 
             let raw_sub = RawSession {

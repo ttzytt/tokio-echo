@@ -7,10 +7,11 @@ use crate::session;
 
 pub type BoxError = Box<dyn Error + Send + Sync>;
 pub type Amrc<T> = Arc<Mutex<T>>;
-pub type TxOut = tokio::sync::mpsc::UnboundedSender<Frame>;
-pub type RxOut = tokio::sync::mpsc::UnboundedReceiver<Frame>;
-pub type TxIn = tokio::sync::mpsc::UnboundedSender<Frame>;
-pub type RxIn = tokio::sync::mpsc::UnboundedReceiver<Frame>;
+pub type TxOut_t = tokio::sync::mpsc::UnboundedSender<Frame>;
+pub type RxOut_t = tokio::sync::mpsc::UnboundedReceiver<Frame>;
+pub type TxIn_t = tokio::sync::mpsc::UnboundedSender<Frame>;
+pub type RxIn_t = tokio::sync::mpsc::UnboundedReceiver<Frame>;
+pub type Id_t = u32;
 
 
 /// Batching configuration
