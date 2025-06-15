@@ -2,7 +2,7 @@ use crate::frame::{Frame, read_frame};
 use tokio::io::AsyncRead;
 use tokio::sync::mpsc::{UnboundedSender};
 
-use crate::common::{BoxError};
+use crate::common::{BoxError, Id_t};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -10,7 +10,7 @@ use std::backtrace::{self, Backtrace};
 
 pub enum ReaderTxInOpt{
     TxIn(UnboundedSender<Frame>), 
-    IdToTxIn(HashMap<u32, UnboundedSender<Frame>>),
+    IdToTxIn(HashMap<Id_t, UnboundedSender<Frame>>),
 }
 
 

@@ -1,6 +1,6 @@
 // src/session.rs
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use crate::common::BoxError;
+use crate::common::{Id_t, ByteSeq};
 use crate::frame::{Frame, FrameKind};
 
 pub struct RawSession {
@@ -20,15 +20,15 @@ impl RawSession {
 /// ClientSession hides stream IDs: send/recv only payloads.
 pub struct ClientSession {
     raw: RawSession,
-    id: u32,
+    id: Id_t,
 }
 
 impl ClientSession {
-    pub fn new(raw: RawSession, id: u32) -> Self {
+    pub fn new(raw: RawSession, id: Id_t) -> Self {
         Self { raw, id }
     }
 
-    pub fn send(&self, payload: Vec<u8>) {
+    pub fn send(&self, payload: ByteSeq) {
         let _ = self.raw.tx_out.send(Frame {
             kind: FrameKind::Data,
             id: self.id,
@@ -36,17 +36,17 @@ impl ClientSession {
         });
     }
 
-    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+    pub async fn recv(&mut self) -> Option<ByteSeq> {
         self.raw.rx_in.recv().await.map(|f| f.payload)
     }
 }
 
 #[async_trait::async_trait]
 pub trait ServerSession{
-    async fn recv(&mut self) -> Option<(u32, Vec<u8>)>;
-    fn send_to(&self, sub_id: u32, payload: Vec<u8>);
-    fn is_connected(&self, sub_id: u32) -> bool;
-    fn send_if_connected(&self, sub_id: u32, payload: Vec<u8>) -> bool {
+    async fn recv(&mut self) -> Option<(Id_t, ByteSeq)>;
+    fn send_to(&self, sub_id: Id_t, payload: ByteSeq);
+    fn is_connected(&self, sub_id: Id_t) -> bool;
+    fn send_if_connected(&self, sub_id: Id_t, payload: ByteSeq) -> bool {
         if self.is_connected(sub_id) {
             self.send_to(sub_id, payload);
             true

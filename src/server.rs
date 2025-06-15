@@ -1,6 +1,6 @@
 // src/server.rs
 
-use crate::common::{Amrc, BoxError, Config, Id_t, ServerHandler};
+use crate::common::{Amrc, BoxError, ByteSeq, Config, Id_t, ServerHandler};
 use crate::frame::{Frame, FrameKind};
 use crate::session::{RawSession, ServerSession};
 use crate::transport::{
@@ -77,7 +77,7 @@ impl SimpleServerSession {
 
 #[async_trait::async_trait]
 impl ServerSession for SimpleServerSession {
-    async fn recv(&mut self) -> Option<(Id_t, Vec<u8>)> {
+    async fn recv(&mut self) -> Option<(Id_t, ByteSeq)> {
         for mut entry in self.conns.iter_mut() {
             let id = *entry.key();
             if let Ok(frame) = entry.value_mut().raw.rx_in.try_recv() {
@@ -87,7 +87,7 @@ impl ServerSession for SimpleServerSession {
         None
     }
 
-    fn send_to(&self, id: Id_t, payload: Vec<u8>) {
+    fn send_to(&self, id: Id_t, payload: ByteSeq) {
         if let Some(conn_ref) = self.conns.get(&id) {
             let _ = conn_ref.raw.tx_out.send(Frame {
                 kind: FrameKind::Data,
@@ -119,11 +119,11 @@ impl MuxServerSession {
 
 #[async_trait::async_trait]
 impl ServerSession for MuxServerSession {
-    async fn recv(&mut self) -> Option<(Id_t, Vec<u8>)> {
+    async fn recv(&mut self) -> Option<(Id_t, ByteSeq)> {
         self.raw.rx_in.recv().await.map(|f| (f.id, f.payload))
     }
 
-    fn send_to(&self, id: Id_t, payload: Vec<u8>) {
+    fn send_to(&self, id: Id_t, payload: ByteSeq) {
         let _ = self.raw.tx_out.send(Frame {
             kind: FrameKind::Data,
             id,

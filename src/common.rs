@@ -12,6 +12,7 @@ pub type RxOut_t = tokio::sync::mpsc::UnboundedReceiver<Frame>;
 pub type TxIn_t = tokio::sync::mpsc::UnboundedSender<Frame>;
 pub type RxIn_t = tokio::sync::mpsc::UnboundedReceiver<Frame>;
 pub type Id_t = u32;
+pub type ByteSeq = Vec<u8>;
 
 
 /// Batching configuration

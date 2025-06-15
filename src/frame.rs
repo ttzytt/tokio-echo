@@ -1,5 +1,5 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::common::BoxError;
+use crate::common::{BoxError, Id_t, ByteSeq};
 
 
 #[repr(u8)]
@@ -37,8 +37,8 @@ impl TryInto<u8> for FrameKind {
 
 pub struct Frame {
     pub kind: FrameKind,
-    pub id: u32, 
-    pub payload : Vec<u8>,
+    pub id: Id_t, 
+    pub payload : ByteSeq,
     
 }
 
@@ -53,11 +53,12 @@ impl Frame{
 
 pub async fn read_frame<R>(reader: &mut R) -> Result<Frame, BoxError>
 where R: AsyncReadExt + Unpin{
+    // TODO: use some automatic serialization tools to make this clearer
     let mut header = [0u8; Frame::HEADER_BYTES]; 
     reader.read_exact(&mut header).await?;
     let kind = FrameKind::try_from(header[0]).unwrap();
-    let id = u32::from_be_bytes(header[1..5].try_into()?) as u32;
-    let len = u32::from_be_bytes(header[5..9].try_into()?) as usize;
+    let id = Id_t::from_be_bytes(header[1..5].try_into()?) as Id_t;
+    let len = Id_t::from_be_bytes(header[5..9].try_into()?) as usize;
     let mut payload = vec![0u8; len];
     reader.read_exact(&mut payload).await?;
     Ok(Frame{kind, id, payload})
@@ -68,7 +69,7 @@ where W: AsyncWriteExt + Unpin {
     let mut buf = Vec::with_capacity(Frame::HEADER_BYTES + frame.payload.len());
     buf.push(frame.kind as u8);
     buf.extend_from_slice(&frame.id.to_be_bytes()); 
-    buf.extend_from_slice(&(frame.payload.len() as u32).to_be_bytes());
+    buf.extend_from_slice(&(frame.payload.len() as Id_t).to_be_bytes());
     buf.extend_from_slice(&frame.payload);
     writer.write_all(&buf).await?;
     Ok(())
@@ -80,7 +81,7 @@ where W: AsyncWriteExt + Unpin {
     for frame in frames {
         buf.push(frame.kind as u8);
         buf.extend_from_slice(&frame.id.to_be_bytes());
-        buf.extend_from_slice(&(frame.payload.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&(frame.payload.len() as Id_t).to_be_bytes());
         buf.extend_from_slice(&frame.payload);
     }
     writer.write_all(&buf).await?;

@@ -1,5 +1,5 @@
 use crate::{
-    common::{BoxError, ClientHandler, Config, RxIn_t, RxOut_t, TxIn_t, TxOut_t},
+    common::{BoxError, Id_t,  ClientHandler, Config, RxIn_t, RxOut_t, TxIn_t, TxOut_t},
     frame::Frame,
     session::{ClientSession, RawSession},
     transport::{
@@ -132,9 +132,9 @@ impl Client {
     pub async fn start_mux_client_handlers(
         common_tx_out: TxOut_t,
         handlers: Vec<Arc<dyn ClientHandler>>,
-    ) -> (JoinHandle<()>, HashMap<u32, TxIn_t>) {
-        let max_id = handlers.len() as u32;
-        let mut sessions: HashMap<u32, TxIn_t> = HashMap::new();
+    ) -> (JoinHandle<()>, HashMap<Id_t, TxIn_t>) {
+        let max_id = handlers.len() as Id_t;
+        let mut sessions: HashMap<Id_t, TxIn_t> = HashMap::new();
         let mut ch_join_handles: Vec<JoinHandle<()>> = Vec::new();
         // ch = client handler
         for id in 1..=max_id {
