@@ -1,5 +1,5 @@
 use crate::{
-    common::{BoxError, Id_t,  ClientHandler, Config, RxIn_t, RxOut_t, TxIn_t, TxOut_t},
+    common::{ClientHandler, Config, Id_t, RxIn_t, TxIn_t, TxOut_t},
     frame::Frame,
     session::{ClientSession, RawSession},
     transport::{
@@ -7,19 +7,21 @@ use crate::{
         writers::writer_task,
     },
 };
+
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, split};
-use tokio::net::TcpStream;
-use tokio::sync::{Notify, mpsc::unbounded_channel};
-use tokio::task::JoinHandle;
-
 use tracing::Instrument;
+use tokio::{
+    io::{split},
+    net::TcpStream,
+    sync::{Notify, mpsc::unbounded_channel},
+    task::JoinHandle,
+};
 
 pub struct Client {
     cfg: Config,
     addr: String,
-    handlers: Vec<Arc<dyn ClientHandler>>, 
+    handlers: Vec<Arc<dyn ClientHandler>>,
     // TODO: change to Arc<Dashset> so that we can register and remove handlers dynamically
 }
 
@@ -133,6 +135,7 @@ impl Client {
         common_tx_out: TxOut_t,
         handlers: Vec<Arc<dyn ClientHandler>>,
     ) -> (JoinHandle<()>, HashMap<Id_t, TxIn_t>) {
+        // TODO: this does not allow adding new handlers once the client manager is running
         let max_id = handlers.len() as Id_t;
         let mut sessions: HashMap<Id_t, TxIn_t> = HashMap::new();
         let mut ch_join_handles: Vec<JoinHandle<()>> = Vec::new();
@@ -146,9 +149,11 @@ impl Client {
                 rx_in,
             };
             let handler = handlers[(id - 1) as usize].clone();
+            let common_tx_out = common_tx_out.clone();
             ch_join_handles.push(tokio::spawn(async move {
                 let mut sess = ClientSession::new(raw_sub, id);
                 handler.run(&mut sess).await;
+                common_tx_out.send(Frame::terminate_id(id)).unwrap();
             }));
         }
         (

@@ -1,18 +1,17 @@
 use crate::frame::{Frame, read_frame};
 use tokio::io::AsyncRead;
-use tokio::sync::mpsc::{UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::common::{BoxError, Id_t};
+use std::backtrace::Backtrace;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Notify;
-use std::backtrace::{self, Backtrace};
 
-pub enum ReaderTxInOpt{
-    TxIn(UnboundedSender<Frame>), 
+pub enum ReaderTxInOpt {
+    TxIn(UnboundedSender<Frame>),
     IdToTxIn(HashMap<Id_t, UnboundedSender<Frame>>),
 }
-
 
 pub async fn frame_reader_task<R, F>(
     mut reader: R,
@@ -22,9 +21,10 @@ pub async fn frame_reader_task<R, F>(
 ) -> Result<(), BoxError>
 where
     R: AsyncRead + Unpin,
-    F: Fn(&Frame), 
+    F: Fn(&Frame),
 {
     let stop_sig = stop_sig.unwrap_or_else(|| Arc::new(Notify::new()));
+    let mut prev_frame = Frame::TERMINATE_ALL_FRAME;
     loop {
         tokio::select! {
             biased;
@@ -40,17 +40,22 @@ where
                                     // cb = callback
                                     cb(&frame);
                                 }
+                                prev_frame = frame.clone();
                                 _ = tx.send(frame)
                             },
                             ReaderTxInOpt::IdToTxIn(map) => {
                                 if let Some(tx) = map.get(&frame.id) {
+                                    prev_frame = frame.clone();
                                     let _ = tx.send(frame);
-                                } 
+                                }
                             }
                         };
                     }
                     Err(e) => {
-                        tracing::error!("Error reading frame: {}\nBacktrace: {}", e, Backtrace::capture());
+                        tracing::error!("Error reading frame: {}\n
+                                         prev frame: {:?}\n
+                                         Backtrace: {}", 
+                                         e, prev_frame, Backtrace::capture());
                         return Err(e);
                     }
                 }

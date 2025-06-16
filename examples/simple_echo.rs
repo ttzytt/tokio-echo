@@ -1,6 +1,4 @@
-use futures::FutureExt;
-use std::env;
-use std::{sync::Arc, time::Duration};
+use std::{env, sync::Arc, time::Duration};
 use tokio::pin;
 use tokio_echo::{
     client::Client,
@@ -14,7 +12,7 @@ struct EchoServer;
 impl ServerHandler for EchoServer {
     async fn run(&self, sess: Amrc<dyn ServerSession + Send>) {
         println!("EchoServer started");
-        const LAST_TIME_S: u64 = 3;
+        const LAST_TIME_S: u64 = 2;
         let timer = tokio::time::sleep(Duration::from_secs(LAST_TIME_S));
         pin!(timer);
 
@@ -44,7 +42,7 @@ struct HellosClient;
 #[async_trait::async_trait]
 impl ClientHandler for HellosClient {
     async fn run(&self, sess: &mut ClientSession) {
-        const LAST_TIME_S: u64 = 2;
+        const LAST_TIME_S: u64 = 1;
         let timer = tokio::time::sleep(Duration::from_secs(LAST_TIME_S));
         pin!(timer);
         println!("HellosClient started");
@@ -75,14 +73,14 @@ impl ClientHandler for HellosClient {
 async fn main() -> Result<(), BoxError> {
     tracing_subscriber::fmt::init();
     unsafe { env::set_var("RUST_BACKTRACE", "full") };
-    // let cfg = Config {
-    //     use_mux: false,
-    //     batch: Some(BatchConfig {
-    //         size_byte: 128,
-    //         delay: Duration::from_millis(100),
-    //     }),
-    // };
-    let cfg = Config { use_mux: false, batch: None};
+    let cfg = Config {
+        use_mux: true,
+        batch: Some(BatchConfig {
+            size_byte: 128,
+            delay: Duration::from_millis(100),
+        }),
+    };
+    // let cfg = Config { use_mux: false, batch: None};
 
     let srv = Arc::from(Server::new(
         cfg.clone(),
@@ -95,7 +93,7 @@ async fn main() -> Result<(), BoxError> {
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     let mut cli = Client::new(cfg, "localhost:4321");
     cli.register(Arc::new(HellosClient));
-    // cli.register(Arc::new(HellosClient));
+    cli.register(Arc::new(HellosClient));
 
     cli.run().await;
     println!("Clients finished running");

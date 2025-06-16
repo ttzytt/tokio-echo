@@ -5,7 +5,6 @@ use crate::{
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Notify;
-use tokio::sync::mpsc::UnboundedReceiver;
 
 pub async fn writer_task<W>(
     mut writer: W,
@@ -25,7 +24,7 @@ pub async fn writer_task<W>(
             tokio::select! {
                 biased;
                 _ = stop_sig.notified() => {
-                    buf.push(Frame::TERMINATE_FRAME);
+                    buf.push(Frame::TERMINATE_ALL_FRAME);
                     flush(&mut writer, &mut buf).await.unwrap();
                     break;
                 },
@@ -55,7 +54,7 @@ pub async fn writer_task<W>(
             tokio::select! {
                 biased;
                 _ = stop_sig.notified() => {
-                    write_frame(&mut writer, &Frame::TERMINATE_FRAME).await.unwrap();
+                    write_frame(&mut writer, &Frame::TERMINATE_ALL_FRAME).await.unwrap();
                     writer.flush().await.unwrap();
                 },
                 frame = rx_out.recv() => {

@@ -1,9 +1,8 @@
-use std::{error::Error, sync::Arc};
+use crate::{frame::Frame, session};
 use async_trait::async_trait;
 use std::time::Duration;
+use std::{error::Error, sync::Arc};
 use tokio::sync::Mutex;
-use crate::frame::Frame;
-use crate::session;
 
 pub type BoxError = Box<dyn Error + Send + Sync>;
 pub type Amrc<T> = Arc<Mutex<T>>;
@@ -13,7 +12,6 @@ pub type TxIn_t = tokio::sync::mpsc::UnboundedSender<Frame>;
 pub type RxIn_t = tokio::sync::mpsc::UnboundedReceiver<Frame>;
 pub type Id_t = u32;
 pub type ByteSeq = Vec<u8>;
-
 
 /// Batching configuration
 #[derive(Clone, Debug)]
