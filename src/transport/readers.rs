@@ -6,7 +6,7 @@ use crate::common::{BoxError, Id_t};
 use std::backtrace::Backtrace;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Notify;
+use crate::utils::OneTimeSignal;
 
 pub enum ReaderTxInOpt {
     TxIn(UnboundedSender<Frame>),
@@ -16,19 +16,19 @@ pub enum ReaderTxInOpt {
 pub async fn frame_reader_task<R, F>(
     mut reader: R,
     tx_in_opt: ReaderTxInOpt,
-    stop_sig: Option<Arc<Notify>>,
+    stop_sig: Option<Arc<OneTimeSignal>>,
     on_frame: Option<F>,
 ) -> Result<(), BoxError>
 where
     R: AsyncRead + Unpin,
     F: Fn(&Frame),
 {
-    let stop_sig = stop_sig.unwrap_or_else(|| Arc::new(Notify::new()));
+    let stop_sig = stop_sig.unwrap_or_else(|| Arc::new(OneTimeSignal::new()));
     let mut prev_frame = Frame::TERMINATE_ALL_FRAME;
     loop {
         tokio::select! {
             biased;
-            _ = stop_sig.notified() => {
+            _ = stop_sig.wait() => {
                 break;
             },
             frame = read_frame(&mut reader) => {

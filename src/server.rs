@@ -1,16 +1,17 @@
 // src/server.rs
 
-use crate::common::{Amrc, BoxError, ByteSeq, Config, Id_t, ServerHandler};
+use crate::common::{Amrc, BoxError, ByteSeq, Id_t, ServerHandler, TransportConfig};
 use crate::frame::{Frame, FrameKind};
 use crate::session::{RawSession, ServerSession};
 use crate::transport::readers::{ReaderTxInOpt, frame_reader_task};
 use crate::transport::writers::writer_task;
+use crate::utils::OneTimeSignal;
 use dashmap::{DashMap, DashSet};
 use std::sync::Arc;
 use tokio::{
     io::split,
     net::{TcpListener, TcpStream},
-    sync::{Mutex, Notify},
+    sync::Mutex,
     task::JoinHandle,
 };
 use tracing::Instrument;
@@ -18,7 +19,7 @@ use tracing::Instrument;
 /// Wraps all per-connection state in Simple mode.
 struct Conn {
     raw: RawSession,
-    stop_sig: Arc<Notify>,
+    stop_sig: Arc<OneTimeSignal>,
     reader: JoinHandle<Result<(), BoxError>>,
     writer: JoinHandle<()>,
 }
@@ -37,10 +38,10 @@ impl SimpleServerSession {
     }
 
     /// Register a new TCP connection under the provided `id`.
-    pub async fn reg_new_session(&self, sock: TcpStream, id: Id_t, cfg: Config) {
+    pub async fn reg_new_session(&self, sock: TcpStream, id: Id_t, cfg: TransportConfig) {
         let (r, w) = split(sock);
         let (raw, rx_out, tx_in) = RawSession::new();
-        let stop_sig = Arc::new(Notify::new());
+        let stop_sig = Arc::new(OneTimeSignal::new());
 
         // Spawn writer task for this connection.
         let writer_handle = tokio::spawn(
@@ -61,8 +62,7 @@ impl SimpleServerSession {
                     if frame.kind == FrameKind::TerminateAll {
                         // Remove this connection and signal its tasks to stop.
                         map_clone.remove(&id);
-                        stop_clone.notify_one();
-                        stop_clone.notify_one();
+                        stop_clone.set();
                     }
                 }),
             )
@@ -93,8 +93,7 @@ impl SimpleServerSession {
             // Remove the Conn from the map, taking ownership.
             if let Some((_, conn)) = self.conns.remove(&id) {
                 // Notify its reader and writer to stop.
-                conn.stop_sig.notify_one();
-                conn.stop_sig.notify_one();
+                conn.stop_sig.set();
                 // Await their completion.
                 let _ = conn.reader.await.unwrap();
                 let _ = conn.writer.await.unwrap();
@@ -176,24 +175,38 @@ impl ServerSession for MuxServerSession {
 
 /// Top‐level server: chooses between Simple and Mux modes.
 pub struct Server {
-    cfg: Config,
-    handler: Arc<dyn ServerHandler>,
-    addr: String,
-    stop_accept_sig: Arc<Notify>,
+    pub cfg: TransportConfig,
+    pub handler: Arc<dyn ServerHandler>,
+    pub addr: String,
+    pub max_client_cnt: usize,
+    stop_accept_sig: Arc<OneTimeSignal>,
+    max_client_reached : Arc<OneTimeSignal>
 }
 
 impl Server {
-    pub fn new(cfg: Config, handler: Arc<dyn ServerHandler>, addr: &str) -> Self {
+    pub fn new(
+        cfg: TransportConfig,
+        handler: Arc<dyn ServerHandler>,
+        addr: &str,
+        accept_client_cnt: Option<usize>,
+    ) -> Self {
+        let accept_client_cnt = accept_client_cnt.or(Some(usize::MAX)).unwrap();
         Self {
             cfg,
             handler,
             addr: addr.into(),
-            stop_accept_sig: Arc::new(Notify::new()),
+            max_client_cnt: accept_client_cnt,
+            stop_accept_sig: Arc::new(OneTimeSignal::new()),
+            max_client_reached: Arc::new(OneTimeSignal::new()),
         }
+    }
+    
+    pub async fn wait_max_client(&self){
+        self.max_client_reached.wait().await;
     }
 
     pub fn stop_accept(&self) {
-        self.stop_accept_sig.notify_one();
+        self.stop_accept_sig.set();
     }
 
     pub async fn run(&self) {
@@ -202,7 +215,7 @@ impl Server {
         if self.cfg.use_mux {
             let (sock, _) = listener.accept().await.unwrap();
             let _ = sock.set_nodelay(self.cfg.batch.is_some());
-            Self::start_mux_server(sock, self.handler.clone(), self.cfg.clone()).await;
+            self.start_mux_server(sock).await;
         } else {
             let session = Amrc::new(Mutex::new(SimpleServerSession::new()));
             let handler = self.handler.clone();
@@ -215,12 +228,19 @@ impl Server {
             });
 
             let session_for_accept = session.clone();
-
+            let accept_client_cnt = self.max_client_cnt;
+            let max_client_reached = self.max_client_reached.clone();
             let accept_task = tokio::spawn(async move {
                 let mut next_id: Id_t = 1;
                 loop {
+                    if next_id > accept_client_cnt as Id_t{
+                        max_client_reached.set();
+                        break;
+                    }
                     tokio::select! {
-                        _ = stop_accept.notified() => return,
+                        _ = stop_accept.wait() => {
+                            return;
+                        },
                         res = listener.accept() => match res {
                             Ok((sock, _)) => {
                                 let _ = sock.set_nodelay(cfg.batch.is_some());
@@ -242,10 +262,15 @@ impl Server {
         }
     }
 
-    async fn start_mux_server(socket: TcpStream, handler: Arc<dyn ServerHandler>, cfg: Config) {
+    async fn start_mux_server(
+        &self,
+        socket: TcpStream,
+    ) {
+        let handler = self.handler.clone();
+        let cfg = self.cfg.clone();
         let (r, w) = split(socket);
         let (raw_sess, rx_out, tx_in) = RawSession::new();
-        let stop_sig = Arc::new(Notify::new());
+        let stop_sig = Arc::new(OneTimeSignal::new());
         let active_ids = Arc::new(DashSet::new());
 
         let writer_handle = tokio::spawn(
@@ -255,28 +280,30 @@ impl Server {
 
         let ids_cb = active_ids.clone();
         let stop_sig_for_spawn = stop_sig.clone();
+        let max_client_cnt = self.max_client_cnt;
+        let max_client_reached = self.max_client_reached.clone();
         let reader_handle = tokio::spawn(
             frame_reader_task(
                 r,
                 ReaderTxInOpt::TxIn(tx_in),
                 Some(stop_sig_for_spawn.clone()),
                 Some(move |frame: &Frame| {
-                    let mut stop_tasks = false;
                     if frame.kind == FrameKind::TerminateAll {
                         ids_cb.clear();
-                        stop_tasks = true;
+                        stop_sig_for_spawn.set();
+                        println!("stop sig set");
                     } else if frame.kind == FrameKind::TerminateId {
                         ids_cb.remove(&frame.id);
                         if ids_cb.is_empty() {
                             // TODO: this will not allow new clients to connect
-                            stop_tasks = true;
+                            stop_sig_for_spawn.set();
+                            println!("stop sig set");
                         }
                     } else {
                         ids_cb.insert(frame.id);
-                    }
-                    if stop_tasks {
-                        stop_sig_for_spawn.notify_one();
-                        stop_sig_for_spawn.notify_one();
+                        if ids_cb.len() >= max_client_cnt {
+                            max_client_reached.set();
+                        }
                     }
                 }),
             )
@@ -286,8 +313,7 @@ impl Server {
         let mux_sess = MuxServerSession::new(raw_sess, active_ids.clone());
         handler.run(Amrc::from(Mutex::from(mux_sess))).await;
 
-        stop_sig.notify_one();
-        stop_sig.notify_one();
+        stop_sig.set();
         let _ = reader_handle.await.unwrap();
         let _ = writer_handle.await.unwrap();
     }

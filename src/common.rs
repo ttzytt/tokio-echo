@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use std::time::Duration;
 use std::{error::Error, sync::Arc};
 use tokio::sync::Mutex;
+use serde::{Serialize, Deserialize};
 
 pub type BoxError = Box<dyn Error + Send + Sync>;
 pub type Amrc<T> = Arc<Mutex<T>>;
@@ -14,26 +15,30 @@ pub type Id_t = u32;
 pub type ByteSeq = Vec<u8>;
 
 /// Batching configuration
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BatchConfig {
     pub size_byte: usize,
     pub delay: Duration,
 }
 
 /// Global configuration
-#[derive(Clone, Debug)]
-pub struct Config {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransportConfig {
     pub use_mux: bool,
     pub batch: Option<BatchConfig>,
 }
 
-impl Default for Config {
+impl Default for TransportConfig {
     fn default() -> Self {
-        Self {
-            use_mux: false,
-            batch: None,
-        }
+        Self::DEFAULT
     }
+}
+
+impl TransportConfig{
+    pub const DEFAULT : Self = Self {
+        use_mux: false,
+        batch: None,
+    };
 }
 
 /// Client‐side handler: sees only payloads, no stream IDs

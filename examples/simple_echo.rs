@@ -2,7 +2,7 @@ use std::{env, sync::Arc, time::Duration};
 use tokio::pin;
 use tokio_echo::{
     client::Client,
-    common::{Amrc, BatchConfig, BoxError, ClientHandler, Config, ServerHandler},
+    common::{Amrc, BatchConfig, BoxError, ClientHandler, TransportConfig, ServerHandler},
     server::Server,
     session::{ClientSession, ServerSession},
 };
@@ -73,20 +73,21 @@ impl ClientHandler for HellosClient {
 async fn main() -> Result<(), BoxError> {
     tracing_subscriber::fmt::init();
     unsafe { env::set_var("RUST_BACKTRACE", "full") };
-    let cfg = Config {
-        use_mux: true,
+    let cfg = TransportConfig {
+        use_mux: false,
         batch: Some(BatchConfig {
             size_byte: 128,
             delay: Duration::from_millis(100),
         }),
     };
-    // let cfg = Config { use_mux: false, batch: None};
+    let cfg = TransportConfig { use_mux: false, batch: None};
 
     let srv = Arc::from(Server::new(
         cfg.clone(),
         Arc::new(EchoServer),
         "localhost:4321",
-    ));
+        None,
+    )); 
     let srv_for_spawn = srv.clone();
     let srv_handle = tokio::spawn(async move { srv_for_spawn.run().await });
 

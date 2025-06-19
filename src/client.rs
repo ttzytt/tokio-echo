@@ -1,5 +1,5 @@
 use crate::{
-    common::{ClientHandler, Config, Id_t, RxIn_t, TxIn_t, TxOut_t},
+    common::{ClientHandler, Id_t, RxIn_t, TransportConfig, TxIn_t, TxOut_t},
     frame::Frame,
     session::{ClientSession, RawSession},
     transport::{
@@ -10,27 +10,30 @@ use crate::{
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::Instrument;
 use tokio::{
-    io::{split},
+    io::split,
     net::TcpStream,
-    sync::{Notify, mpsc::unbounded_channel},
+    sync::mpsc::unbounded_channel,
     task::JoinHandle,
 };
+use crate::utils::OneTimeSignal;
+use tracing::Instrument;
 
 pub struct Client {
-    cfg: Config,
-    addr: String,
-    handlers: Vec<Arc<dyn ClientHandler>>,
+    pub cfg: TransportConfig,
+    pub addr: String,
+    pub handlers: Vec<Arc<dyn ClientHandler>>,
+    pub all_handler_connected_sig: Arc<OneTimeSignal>,
     // TODO: change to Arc<Dashset> so that we can register and remove handlers dynamically
 }
 
 impl Client {
-    pub fn new(cfg: Config, addr: &str) -> Self {
+    pub fn new(cfg: TransportConfig, addr: &str) -> Self {
         Self {
             cfg,
             addr: addr.into(),
             handlers: Vec::new(),
+            all_handler_connected_sig: Arc::new(OneTimeSignal::new()),
         }
     }
 
@@ -42,7 +45,13 @@ impl Client {
         if self.cfg.use_mux {
             let sock = TcpStream::connect(&self.addr).await.unwrap();
             let _ = sock.set_nodelay(self.cfg.batch.is_some());
-            Client::start_mux_client(sock, self.handlers.clone(), self.cfg.clone()).await
+            Client::start_mux_client(
+                sock,
+                self.handlers.clone(),
+                self.cfg.clone(),
+                self.all_handler_connected_sig.clone(),
+            )
+            .await
         } else {
             let mut handles: Vec<JoinHandle<()>> = Vec::new();
             for h in self.handlers.iter() {
@@ -54,6 +63,7 @@ impl Client {
                     h.clone(),
                 ));
             }
+            self.all_handler_connected_sig.set();
 
             for h in handles {
                 h.await.unwrap();
@@ -64,12 +74,12 @@ impl Client {
     /// Simple TCP (no mux) for clients
     fn start_simple_client(
         socket: TcpStream,
-        cfg: Config,
+        cfg: TransportConfig,
         handler: Arc<dyn ClientHandler>,
     ) -> JoinHandle<()> {
         let (r, w) = split(socket);
         let (raw, rx_out, tx_in) = RawSession::new();
-        let stop_sig = Arc::new(Notify::new());
+        let stop_sig = Arc::new(OneTimeSignal::new());
         let writer_handle = tokio::spawn(
             writer_task(w, rx_out, cfg.batch.clone(), Some(stop_sig.clone()))
                 .instrument(tracing::info_span!("writer_task", is_server = false)),
@@ -93,8 +103,7 @@ impl Client {
 
         tokio::spawn(async move {
             ch_join_handle.await.unwrap();
-            stop_sig.notify_one();
-            stop_sig.notify_one();
+            stop_sig.set();
             reader_handle.await.unwrap().unwrap();
             writer_handle.await.unwrap();
         })
@@ -104,11 +113,12 @@ impl Client {
     async fn start_mux_client(
         socket: TcpStream,
         handlers: Vec<Arc<dyn ClientHandler>>,
-        cfg: Config,
+        cfg: TransportConfig,
+        all_handler_connected_sig: Arc<OneTimeSignal>,
     ) {
         let (r, w) = split(socket);
         let (raw, rx_out, _tx_in) = RawSession::new();
-        let stop_sig = Arc::new(Notify::new());
+        let stop_sig = Arc::new(OneTimeSignal::new());
         let writer_handle = tokio::spawn(writer_task(
             w,
             rx_out,
@@ -117,6 +127,7 @@ impl Client {
         ));
         let (ch_join_handle, id_to_tx_in) =
             Client::start_mux_client_handlers(raw.tx_out.clone(), handlers).await;
+        all_handler_connected_sig.set();
         let reader_handle = tokio::spawn(frame_reader_task(
             r,
             ReaderTxInOpt::IdToTxIn(id_to_tx_in),
@@ -125,8 +136,7 @@ impl Client {
         ));
 
         ch_join_handle.await.unwrap();
-        stop_sig.notify_one();
-        stop_sig.notify_one();
+        stop_sig.set();
         reader_handle.await.unwrap().unwrap();
         writer_handle.await.unwrap();
     }

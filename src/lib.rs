@@ -6,3 +6,4 @@ pub mod session;
 pub mod transport;
 pub mod client;
 pub mod bench;
+pub mod utils;
