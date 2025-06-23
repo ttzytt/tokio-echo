@@ -31,7 +31,7 @@ fn main() {
             },
             client_cnt: 10,
             repeat_cnt: 3 ,
-            server_thread_cnt: 5,
+            server_thread_cnt: 1,
             client_thread_cnt: 10,
             last_time: std::time::Duration::from_secs(3),
             addl_payload_bytes: 0,
