@@ -127,8 +127,8 @@ impl BenchServerManager {
                 msg_tputs.push(msg_tput);
                 bytes_tputs.push(bytes_tput);
                 println!(
-                    "Case: {}, Messages: {}, Bytes: {}, Msg Tput: {:.2} msg/s, Bytes Tput: {:.2} B/s",
-                    case.note, msg_cnt, msg_bytes, msg_tput, bytes_tput
+                    "Case: {}, Messages: {}, Bytes: {}, Msg Tput: {:.2} msg/s, Bytes Tput: {:.2} KB/s",
+                    case.note, msg_cnt, msg_bytes, msg_tput, bytes_tput / 1000.0
                 );
             }
             let msg_tput_stat = BenchStat::<f64, f64>::new(msg_tputs, true);

@@ -41,13 +41,16 @@ impl ServerHandler for EchoServer {
 struct HellosClient;
 #[async_trait::async_trait]
 impl ClientHandler for HellosClient {
-    async fn run(&self, sess: &mut ClientSession) {
+    async fn run(&self, sess: Amrc<ClientSession>) {
         const LAST_TIME_S: u64 = 1;
         let timer = tokio::time::sleep(Duration::from_secs(LAST_TIME_S));
         pin!(timer);
         println!("HellosClient started");
         let mut msg_cnt = 0;
         loop {
+            // clone the Arc to keep it alive during the lock
+            let sess_arc = sess.clone();
+            let mut sess = sess_arc.lock().await;
             let msg = format!("hello world {}", msg_cnt);
             println!("client sent:\n{}", msg);
             msg_cnt += 1;

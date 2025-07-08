@@ -1,5 +1,5 @@
 use crate::{
-    common::{ClientHandler, Id_t, RxIn_t, TransportConfig, TxIn_t, TxOut_t},
+    common::{ClientHandler, Id_t, RxIn_t, TransportConfig, TxIn_t, TxOut_t, Amrc},
     frame::Frame,
     session::{ClientSession, RawSession},
     transport::{
@@ -10,6 +10,7 @@ use crate::{
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::{
     io::split,
     net::TcpStream,
@@ -23,7 +24,7 @@ pub struct Client {
     pub cfg: TransportConfig,
     pub addr: String,
     pub handlers: Vec<Arc<dyn ClientHandler>>,
-    pub all_handler_connected_sig: Arc<OneTimeSignal>,
+    pub all_handlers_connected_sig: Arc<OneTimeSignal>,
     // TODO: change to Arc<Dashset> so that we can register and remove handlers dynamically
 }
 
@@ -33,7 +34,7 @@ impl Client {
             cfg,
             addr: addr.into(),
             handlers: Vec::new(),
-            all_handler_connected_sig: Arc::new(OneTimeSignal::new()),
+            all_handlers_connected_sig: Arc::new(OneTimeSignal::new()),
         }
     }
 
@@ -45,11 +46,12 @@ impl Client {
         if self.cfg.use_mux {
             let sock = TcpStream::connect(&self.addr).await.unwrap();
             let _ = sock.set_nodelay(self.cfg.batch.is_some());
+            println!("client socket connected");
             Client::start_mux_client(
                 sock,
                 self.handlers.clone(),
                 self.cfg.clone(),
-                self.all_handler_connected_sig.clone(),
+                self.all_handlers_connected_sig.clone(),
             )
             .await
         } else {
@@ -63,7 +65,7 @@ impl Client {
                     h.clone(),
                 ));
             }
-            self.all_handler_connected_sig.set();
+            self.all_handlers_connected_sig.set();
 
             for h in handles {
                 h.await.unwrap();
@@ -95,10 +97,10 @@ impl Client {
             .instrument(tracing::info_span!("reader_task", is_server = false)),
         );
 
+        // wrap raw session in Amrc<Mutex<>> and invoke handler
+        let sess = Amrc::new(Mutex::new(ClientSession::new(raw, 0)));
         let ch_join_handle = tokio::spawn(async move {
-            // ch = client handler
-            let mut sess = ClientSession::new(raw, 0);
-            handler.run(&mut sess).await;
+            handler.run(sess.clone()).await;
         });
 
         tokio::spawn(async move {
@@ -154,15 +156,16 @@ impl Client {
             let (tx_in, rx_in): (TxIn_t, RxIn_t) = unbounded_channel();
             sessions.insert(id, tx_in.clone());
 
+            // wrap each sub-session in Amrc<Mutex<>> for concurrent handling
             let raw_sub = RawSession {
                 tx_out: common_tx_out.clone(),
                 rx_in,
             };
             let handler = handlers[(id - 1) as usize].clone();
             let common_tx_out = common_tx_out.clone();
+            let sess = Amrc::new(Mutex::new(ClientSession::new(raw_sub, id)));
             ch_join_handles.push(tokio::spawn(async move {
-                let mut sess = ClientSession::new(raw_sub, id);
-                handler.run(&mut sess).await;
+                handler.run(sess.clone()).await;
                 common_tx_out.send(Frame::terminate_id(id)).unwrap();
             }));
         }

@@ -9,14 +9,21 @@ use crate::{
     session::{ClientSession, ServerSession},
     utils::OneTimeSignal,
 };
+use dashmap::DashMap;
+use futures::FutureExt;
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
-use std::collections::HashMap;
-use std::thread;
 use std::{sync::Arc, time::Duration};
-use tokio::{net::TcpStream, pin, sync::Notify, time::Instant};
-
+use tokio::sync::Mutex;
+use tokio::time;
+use tokio::{
+    net::TcpStream,
+    pin,
+    sync::Notify,
+    time::{Instant, MissedTickBehavior},
+};
+use tracing::Instrument;
 #[derive(Serialize, Deserialize, Debug)]
 struct EchoFrame {
     pub fid: u32,
@@ -41,37 +48,63 @@ struct BenchEchoServer {
 
 #[async_trait::async_trait]
 impl ClientHandler for BenchEchoServer {
-    async fn run(&self, sess: &mut ClientSession) {
+    async fn run(&self, mut sess: Amrc<ClientSession>) {
         self.all_handler_connected_sig.wait().await;
+        let mut msg_cnt = 0;
+        let fid_to_sent_time: Arc<DashMap<u32, Instant>> = Arc::new(DashMap::new());
+        let mut latencies: Vec<u16> = Vec::new();
+        let send_task_handle = {
+            let sess = sess.clone();
+            let addl_payload_bytes = self.cfg.clone().addl_payload_bytes;
+            let last_time = self.cfg.last_time;
+            let fid_to_sent_time = fid_to_sent_time.clone();
+            tokio::spawn(async move {
+                let timer = tokio::time::sleep(last_time);
+                pin!(timer);
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut timer => {
+                            println!("client timer reached");
+                            break;
+                        }
+                        sess = sess.lock() => {
+                            // wait for the session to be ready
+                            let send_msg = EchoFrame::new(msg_cnt as u32, addl_payload_bytes);
+                            sess.send(serde_json::to_vec(&send_msg).unwrap());
+                            fid_to_sent_time.insert(msg_cnt as u32, Instant::now());
+                            msg_cnt += 1;
+                        }
+                    }
+                }
+            })
+        };
         let timer = tokio::time::sleep(self.cfg.last_time);
         pin!(timer);
-        let mut msg_cnt = 0;
-        let mut fid_to_sent_time: HashMap<u32, Instant> = HashMap::new();
-        let mut latencies: Vec<u16> = Vec::new();
         loop {
-            let send_msg = EchoFrame::new(msg_cnt as u32, self.cfg.addl_payload_bytes);
-            sess.send(serde_json::to_vec(&send_msg).unwrap());
-            fid_to_sent_time.insert(msg_cnt as u32, Instant::now());
-            msg_cnt += 1;
             tokio::select! {
                 biased;
                 _ = &mut timer => {
                     println!("client timer reached");
                     break;
                 },
-                recv_msg = sess.recv() => {
+                mut sess = sess.lock() => {
+                    let recv_msg = sess.recv().now_or_never();
+                    if recv_msg.is_none() {continue;}
+                    let recv_msg = recv_msg.unwrap();
                     if let Some(recv_msg) = recv_msg {
                         let echoed_frame =  serde_json::from_slice::<EchoFrame>(&recv_msg).unwrap();
-                        if let Some(sent_time) = fid_to_sent_time.remove(&echoed_frame.fid) {
+                        if let Some((_, sent_time)) = fid_to_sent_time.remove(&echoed_frame.fid) {
                             let latency = sent_time.elapsed().as_millis() as u16;
                             latencies.push(latency);
                         } else {
                             eprintln!("Received frame with fid {} that was not sent", echoed_frame.fid);
                         }
                     }
-                }
+                },
             }
         }
+        send_task_handle.await.unwrap();
         self.latencies.set(latencies).unwrap();
     }
 }
@@ -117,18 +150,20 @@ impl BenchClientManager {
                     let handler = Arc::new(BenchEchoServer {
                         cfg: cfg.clone(),
                         latencies: OnceCell::new(),
-                        all_handler_connected_sig: client.all_handler_connected_sig.clone(),
+                    all_handler_connected_sig: client.all_handlers_connected_sig.clone(),
                     });
                     handlers.push(handler.clone());
                     client.register(handler);
                 }
                 println!("client created {} handlers", handlers.len());
 
-                let all_handler_connected_sig = client.all_handler_connected_sig.clone();
+                let all_handler_connected_sig = client.all_handlers_connected_sig.clone();
                 self.comm.expect_event(BenchEvent::ServerSpawned)?;
-                // wait for server to accept 
+                // wait for server to accept
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let ch_join_handle = tokio::spawn(async move { client.run().await });
+                let ch_join_handle = tokio::spawn(
+                    async move { client.run().await }.instrument(tracing::info_span!("client_run")),
+                );
 
                 self.comm.send_event(&BenchEvent::ClientSpawned)?;
 
@@ -156,11 +191,11 @@ impl BenchClientManager {
 
     pub fn run(&mut self) -> Result<(), BoxError> {
         let case_cnt_event = self.comm.expect_event(BenchEvent::ServerSendCaseCnt(0))?;
-        let case_cnt = match case_cnt_event  {
+        let case_cnt = match case_cnt_event {
             BenchEvent::ServerSendCaseCnt(cnt) => cnt,
             _ => return Err("Expect receive ServerSendCaseCnt event".into()),
         };
-        for _ in 0..case_cnt{
+        for _ in 0..case_cnt {
             self.run_case()?;
         }
         Ok(())

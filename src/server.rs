@@ -15,6 +15,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tracing::Instrument;
+use tracing::info;
 
 /// Wraps all per-connection state in Simple mode.
 struct Conn {
@@ -291,13 +292,13 @@ impl Server {
                     if frame.kind == FrameKind::TerminateAll {
                         ids_cb.clear();
                         stop_sig_for_spawn.set();
-                        println!("stop sig set");
+                        info!("stop sig set due to TerminateAll");
                     } else if frame.kind == FrameKind::TerminateId {
                         ids_cb.remove(&frame.id);
                         if ids_cb.is_empty() {
                             // TODO: this will not allow new clients to connect
                             stop_sig_for_spawn.set();
-                            println!("stop sig set");
+                            info!("stop sig set due to TerminateId");
                         }
                     } else {
                         ids_cb.insert(frame.id);

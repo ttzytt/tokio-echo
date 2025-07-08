@@ -44,11 +44,11 @@ impl TransportConfig{
 /// Client‐side handler: sees only payloads, no stream IDs
 #[async_trait]
 pub trait ClientHandler: Send + Sync + 'static {
-    async fn run(&self, sess: &mut session::ClientSession);
+    async fn run(&self, sess: Amrc<session::ClientSession>);
 }
 
 /// Server‐side handler: sees stream IDs + payloads
 #[async_trait]
 pub trait ServerHandler: Send + Sync + 'static {
-    async fn run(&self, mut sess: Amrc<dyn session::ServerSession + Send>);
+    async fn run(&self, sess: Amrc<dyn session::ServerSession + Send>);
 }
